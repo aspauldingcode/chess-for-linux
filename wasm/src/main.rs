@@ -8,6 +8,7 @@ mod font;
 #[allow(dead_code)]
 #[path = "../../src/game.rs"]
 mod game;
+mod gpu;
 mod ui;
 
 #[link(wasm_import_module = "env")]
@@ -23,6 +24,7 @@ unsafe extern "C" {
 const DISPLAY: u32 = 1;
 const FORMAT_XRGB8888: u32 = 1;
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 const KEY_PRESSED: u32 = 1;
 const DEFAULT_W: i32 = 640;
 const DEFAULT_H: i32 = 800;
@@ -59,6 +61,14 @@ struct Conn {
     ptr_y: i32,
     ptr_inside: bool,
     shift: bool,
+    orbit: Option<Orbit>,
+}
+
+struct Orbit {
+    last_x: i32,
+    last_y: i32,
+    moved: bool,
+    tap: bool,
 }
 
 fn main() {
@@ -97,6 +107,7 @@ fn main() {
         ptr_y: 0,
         ptr_inside: false,
         shift: false,
+        orbit: None,
     };
 
     c.registry = c.alloc();
@@ -358,11 +369,8 @@ impl Conn {
             self.on_pointer(opcode, &payload);
         } else if self.keyboard != 0 && obj == self.keyboard {
             self.on_keyboard(opcode, &payload);
-        } else if self.touch != 0 && obj == self.touch && opcode == 0 && payload.len() >= 24 {
-            let x = fixed_to_i32(i32::from_le_bytes(payload[16..20].try_into().unwrap()));
-            let y = fixed_to_i32(i32::from_le_bytes(payload[20..24].try_into().unwrap()));
-            self.ui.click(x, y, self.width, self.height);
-            self.need_redraw = true;
+        } else if self.touch != 0 && obj == self.touch {
+            self.on_touch(opcode, &payload);
         }
         true
     }
@@ -382,18 +390,97 @@ impl Conn {
             2 if payload.len() >= 12 => {
                 self.ptr_x = fixed_to_i32(i32::from_le_bytes(payload[4..8].try_into().unwrap()));
                 self.ptr_y = fixed_to_i32(i32::from_le_bytes(payload[8..12].try_into().unwrap()));
+                self.drag_orbit(self.ptr_x, self.ptr_y);
             }
             // button: time, serial, button, state
             3 if payload.len() >= 16 => {
                 let button = u32::from_le_bytes(payload[8..12].try_into().unwrap());
                 let state = u32::from_le_bytes(payload[12..16].try_into().unwrap());
-                if button == BTN_LEFT && state == KEY_PRESSED && self.ptr_inside {
+                if button == BTN_RIGHT && self.ptr_inside {
+                    if state == KEY_PRESSED {
+                        self.orbit = Some(Orbit {
+                            last_x: self.ptr_x,
+                            last_y: self.ptr_y,
+                            moved: false,
+                            tap: false,
+                        });
+                    } else {
+                        self.orbit = None;
+                    }
+                }
+                if button == BTN_LEFT
+                    && state == KEY_PRESSED
+                    && self.ptr_inside
+                    && self.orbit.is_none()
+                {
+                    self.ui
+                        .click(self.ptr_x, self.ptr_y, self.width, self.height);
+                    self.need_redraw = true;
+                }
+            }
+            // axis: time, axis, value
+            4 if payload.len() >= 12 => {
+                let axis = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+                let value = i32::from_le_bytes(payload[8..12].try_into().unwrap());
+                if axis == 0 {
+                    self.ui.zoom(value as f32 / 256.0 * 0.15);
+                    self.need_redraw = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_touch(&mut self, opcode: u16, payload: &[u8]) {
+        match opcode {
+            0 if payload.len() >= 24 => {
+                let x = fixed_to_i32(i32::from_le_bytes(payload[16..20].try_into().unwrap()));
+                let y = fixed_to_i32(i32::from_le_bytes(payload[20..24].try_into().unwrap()));
+                self.ptr_x = x;
+                self.ptr_y = y;
+                self.orbit = Some(Orbit {
+                    last_x: x,
+                    last_y: y,
+                    moved: false,
+                    tap: true,
+                });
+            }
+            2 if payload.len() >= 16 => {
+                let x = fixed_to_i32(i32::from_le_bytes(payload[8..12].try_into().unwrap()));
+                let y = fixed_to_i32(i32::from_le_bytes(payload[12..16].try_into().unwrap()));
+                self.drag_orbit(x, y);
+            }
+            1 => {
+                let tap = self.orbit.take().is_some_and(|o| o.tap && !o.moved);
+                if tap {
                     self.ui
                         .click(self.ptr_x, self.ptr_y, self.width, self.height);
                     self.need_redraw = true;
                 }
             }
             _ => {}
+        }
+    }
+
+    fn drag_orbit(&mut self, x: i32, y: i32) {
+        let Some((dx, dy, moved)) = self.orbit.as_mut().map(|orbit| {
+            let dx = x - orbit.last_x;
+            let dy = y - orbit.last_y;
+            if dx.abs() + dy.abs() > 2 {
+                orbit.moved = true;
+            }
+            let moved = orbit.moved;
+            orbit.last_x = x;
+            orbit.last_y = y;
+            (dx, dy, moved)
+        }) else {
+            return;
+        };
+        self.ptr_x = x;
+        self.ptr_y = y;
+        if moved && (dx != 0 || dy != 0) {
+            self.ui.orbit(dx as f32, dy as f32);
+            self.need_redraw = true;
         }
     }
 
@@ -418,6 +505,11 @@ impl Conn {
                 }
                 if key == 1 {
                     self.ui.cancel();
+                    self.need_redraw = true;
+                    return;
+                }
+                if key == 33 && self.ui.input.is_empty() && gpu::shown(self.width, self.height) {
+                    self.ui.flip();
                     self.need_redraw = true;
                     return;
                 }

@@ -1,6 +1,7 @@
 use crate::{
     engine, font,
     game::{Game, Rules},
+    gpu,
 };
 use shakmaty::{Color, Move, Position, Role, Square};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -12,6 +13,7 @@ pub struct Ui {
     selected: Option<Square>,
     promotion: Vec<Move>,
     computer: bool,
+    cam: gpu::Cam,
 }
 
 impl Default for Ui {
@@ -23,6 +25,7 @@ impl Default for Ui {
             selected: None,
             promotion: vec![],
             computer: false,
+            cam: gpu::Cam::default(),
         }
     }
 }
@@ -120,12 +123,36 @@ impl Ui {
         }
         let (bx, by, cell) = board_geometry(width, height);
         if !self.promotion.is_empty() {
-            let py = by + cell * 8 + 20;
-            if (py..py + 24).contains(&y) && x >= bx {
-                let index = ((x - bx) / 48) as usize;
+            let (px, py) = if gpu::shown(width, height) {
+                (12, height - 60)
+            } else {
+                (bx, by + cell * 8 + 20)
+            };
+            if (py..py + 24).contains(&y) && x >= px {
+                let index = ((x - px) / 48) as usize;
                 if let Some(m) = self.promotion.get(index).copied() {
                     self.play(m);
                 }
+            }
+            return;
+        }
+        if gpu::shown(width, height)
+            && let Some((vx, vy, vw, vh)) = gpu::viewport(width, height)
+            && (vx..vx + vw).contains(&x)
+            && (vy..vy + vh).contains(&y)
+        {
+            if let Some(square) = gpu::pick(
+                &self.cam,
+                [x as f32, y as f32],
+                gpu::Rect {
+                    x: vx as f32,
+                    y: vy as f32,
+                    w: vw as f32,
+                    h: vh as f32,
+                },
+                &self.game,
+            ) {
+                self.click_square(square);
             }
             return;
         }
@@ -133,6 +160,10 @@ impl Ui {
             return;
         }
         let square = Square::new(((7 - (y - by) / cell) * 8 + (x - bx) / cell) as u32);
+        self.click_square(square);
+    }
+
+    fn click_square(&mut self, square: Square) {
         if let Some(from) = self.selected {
             let candidates: Vec<_> = self
                 .game
@@ -185,6 +216,19 @@ impl Ui {
         }
     }
 
+    pub fn orbit(&mut self, dx: f32, dy: f32) {
+        self.cam.yaw += dx * 0.45;
+        self.cam.elevation = (self.cam.elevation + dy * 0.25).clamp(20.0, 89.0);
+    }
+
+    pub fn zoom(&mut self, delta: f32) {
+        self.cam.distance = (self.cam.distance + delta).clamp(6.0, 40.0);
+    }
+
+    pub fn flip(&mut self) {
+        self.cam.yaw += 180.0;
+    }
+
     pub fn cancel(&mut self) {
         self.selected = None;
         self.promotion.clear();
@@ -222,6 +266,14 @@ impl Ui {
             canvas.text(x + 6, 51, label, 0xfff0e5d0, 1);
         }
         let (bx, by, cell) = board_geometry(width, height);
+        if gpu::shown(width, height)
+            && let Some((vx, vy, vw, vh)) = gpu::viewport(width, height)
+            && let Some(frame) = gpu::frame(&self.game, &self.cam, self.selected, vw, vh)
+        {
+            canvas.blit(vx, vy, vw, vh, &frame);
+            self.draw_status(&mut canvas, 12, height - 72, height);
+            return;
+        }
         let legal: Vec<_> = self
             .game
             .board
@@ -276,6 +328,10 @@ impl Ui {
             }
         }
         let y = by + cell * 8 + 8;
+        self.draw_status(&mut canvas, bx, y, height);
+    }
+
+    fn draw_status(&self, canvas: &mut Canvas<'_>, bx: i32, y: i32, height: i32) {
         if self.promotion.is_empty() {
             canvas.text(bx, y, &self.game.status().replace('·', "/"), 0xfff0e5d0, 1);
             canvas.text(bx, y + 16, &self.message.replace('·', "/"), 0xff9cbdaf, 1);
@@ -324,7 +380,11 @@ impl Ui {
             canvas.text(
                 bx,
                 height - 14,
-                "Type UCI/SAN; drops N@e4; Esc clears",
+                if gpu::shown(canvas.width, canvas.height) {
+                    "Right-drag orbits  Scroll zooms  F flips"
+                } else {
+                    "Type UCI/SAN; drops N@e4; Esc clears"
+                },
                 0xff9cbdaf,
                 1,
             );
@@ -387,6 +447,26 @@ impl Canvas<'_> {
                         self.rect(x + px * scale, y + py * scale, scale, scale, color);
                     }
                 }
+            }
+        }
+    }
+    fn blit(&mut self, x: i32, y: i32, w: i32, h: i32, rgba: &[u8]) {
+        for row in 0..h {
+            for col in 0..w {
+                let s = ((row * w + col) * 4) as usize;
+                if s + 3 >= rgba.len() {
+                    return;
+                }
+                let dx = x + col;
+                let dy = y + row;
+                if dx < 0 || dy < 0 || dx >= self.width || dy >= self.height {
+                    continue;
+                }
+                let d = ((dy * self.width + dx) * 4) as usize;
+                self.pixels[d] = rgba[s + 2];
+                self.pixels[d + 1] = rgba[s + 1];
+                self.pixels[d + 2] = rgba[s];
+                self.pixels[d + 3] = 0xff;
             }
         }
     }

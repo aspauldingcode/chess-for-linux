@@ -253,7 +253,8 @@ def run(module_path, real=False):
     engine = wasmtime.Engine()
     module = wasmtime.Module.from_file(engine, str(module_path))
     allowed = {"wawona_wayland_connect", "wawona_wayland_shm_create", "wawona_wayland_shm_write",
-               "wawona_wayland_sendmsg", "wawona_socket_recv", "wawona_socket_close"}
+               "wawona_wayland_sendmsg", "wawona_socket_recv", "wawona_socket_close",
+               "wawona_vk_probe", "wawona_vk_upload", "wawona_vk_frame"}
     for imp in module.imports:
         assert imp.module == "wasi_snapshot_preview1" or (imp.module == "env" and imp.name in allowed), (imp.module, imp.name)
     linker = wasmtime.Linker(engine)
@@ -265,6 +266,9 @@ def run(module_path, real=False):
         "wawona_wayland_sendmsg": (4, host.send),
         "wawona_socket_recv": (4, host.receive),
         "wawona_socket_close": (1, host.close),
+        "wawona_vk_probe": (0, lambda caller: 0),
+        "wawona_vk_upload": (1, lambda caller, _desc: 52),
+        "wawona_vk_frame": (1, lambda caller, _desc: 52),
     }.items():
         linker.define_func("env", name, wasmtime.FuncType([wasmtime.ValType.i32()] * count, [wasmtime.ValType.i32()]), callback, access_caller=True)
     with tempfile.TemporaryDirectory(prefix="chess-wasm-test-") as temp:

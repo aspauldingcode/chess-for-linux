@@ -6,9 +6,13 @@ wasm catalog. The software-rendered 2D board uses `wl_compositor`, `wl_shm`,
 and computer engine are compiled directly from the native app's
 [`src/game.rs`](../src/game.rs) and [`src/engine.rs`](../src/engine.rs).
 
-This is a separate frontend, without Qt, Kirigami, Vulkan or browser APIs.
-It contains no native executables or external artwork. It requires Wawona's
-host imports; a plain browser or standard WASI runner cannot launch it.
+This is a separate frontend, without Qt, Kirigami or browser APIs. When the
+Wawona host exports `wawona_vk_probe`, `wawona_vk_upload` and `wawona_vk_frame`,
+the client packs the same Wood scene as `chess-linux` (`src/board.wgsl`,
+piece meshes, `Styles/` and `Resources/MTL` textures) and the host rasterizes
+it with Vulkan. The pixels still go out through `wl_shm`. If those imports are
+missing, or Vulkan cannot be created, the software 2D board remains. A plain
+browser or standard WASI runner cannot launch it.
 
 ## Build
 
@@ -24,7 +28,7 @@ The output in `artifacts/wasm/` matches the repository's `/wasm/v1` layout:
 ```text
 index.json                         catalog fragment containing one package
 SHA256SUMS
-packages/chess-wawona/0.1.0/
+packages/chess-wawona/0.2.0/
   component.wasm
   LICENSE
   LICENSE.wawona
@@ -55,6 +59,8 @@ wasm chess-wawona
 ## Controls and supported features
 
 - Click or tap a piece and its destination; legal destinations are marked.
+- With the Vulkan board: right-drag or touch-drag orbits, scroll zooms, F flips.
+  A short tap still moves a piece.
 - Type a UCI or SAN move and press Enter. Crazyhouse drops use `N@e4`.
 - **New**, **Undo**, **Redo**, **AI on/off**, and **Variant** buttons.
   Variant cycles Standard, Crazyhouse, Suicide and Losers and starts a new game.
@@ -64,9 +70,11 @@ wasm chess-wawona
 - The board resizes with the window. Keyboard text entry currently assumes
   US evdev keycodes; it does not interpret the compositor's XKB keymap.
 
-File persistence/import/export, network play, speech, recording and the
-native app's 3D board are not part of this wasm frontend. Games live in memory
-until the window closes.
+File persistence/import/export, network play, speech and recording are not
+part of this wasm frontend. Games live in memory until the window closes.
+The 3D board needs a Wawona build that provides the Vulkan host imports.
+Publish that module only after those imports are in the runtime, because a
+guest that always imports `wawona_vk_*` will not instantiate on an older host.
 
 ## Verification
 
@@ -123,9 +131,10 @@ with capability-driven seat binding and explicit SHM handle cleanup.
 The original notice is in [`LICENSE.wawona`](LICENSE.wawona).
 New frontend code and the shared engine/rules are GPL-3.0-or-later.
 
-The six `env` imports are `wawona_wayland_connect`,
+The `env` imports are `wawona_wayland_connect`,
 `wawona_wayland_shm_create`, `wawona_wayland_shm_write`,
-`wawona_wayland_sendmsg`, `wawona_socket_recv`, and `wawona_socket_close`.
+`wawona_wayland_sendmsg`, `wawona_socket_recv`, `wawona_socket_close`,
+`wawona_vk_probe`, `wawona_vk_upload`, and `wawona_vk_frame`.
 All other imports are standard `wasi_snapshot_preview1` functions. In this
 catalog `component.wasm` is the conventional filename for a **P1 core module**;
 it is not a WASI Preview 2 component.
